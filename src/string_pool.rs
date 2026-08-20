@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StringPool {
     map: HashMap<String, usize>,
     buf: Vec<String>,
