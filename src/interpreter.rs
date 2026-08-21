@@ -1,6 +1,12 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, usize};
 
-use crate::{Term, error::InterpreterError, parser::Parser, string_pool::StringPool};
+use crate::{
+    Term::{self},
+    error::InterpreterError,
+    parser::Parser,
+    string_pool::StringPool,
+    term::NormalizedTerm,
+};
 
 #[derive(Debug, Clone)]
 pub struct Interpreter {
@@ -16,23 +22,36 @@ impl Interpreter {
         }
     }
 
-    /// Convert a term to normal form
-    pub fn normalize(&mut self, mut term: Term) -> Term {
+    /// Converts a term to normal form. Does eta expansion.
+    pub fn normalize(&mut self, mut term: Term) -> NormalizedTerm {
         term = self.reduce(term);
         match term {
-            Term::Var(var_idx) => Term::Var(var_idx),
-            Term::Lambda { param, body } => Term::Lambda {
-                param,
-                body: self.normalize(*body).into(),
-            },
-            Term::App { left, right } => Term::App {
-                left: self.normalize(*left).into(),
-                right: self.normalize(*right).into(),
-            },
+            Term::Var(var_idx) => NormalizedTerm::new_unchecked(Term::Var(var_idx)),
+            Term::Lambda { param, body } => {
+                let new_body = self.normalize(*body);
+                if let Term::App { left, right } = new_body.as_ref()
+                    && let Term::Var(var_idx) = **right
+                    && param == var_idx
+                    && !self.free_vars(&left).contains(&var_idx)
+                {
+                    let Term::App { left, .. } = new_body.into_inner() else {
+                        panic!();
+                    };
+                    return NormalizedTerm::new_unchecked(*left);
+                }
+                NormalizedTerm::new_unchecked(Term::Lambda {
+                    param,
+                    body: new_body.into_inner().into(),
+                })
+            }
+            Term::App { left, right } => NormalizedTerm::new_unchecked(Term::App {
+                left: self.normalize(*left).into_inner().into(),
+                right: self.normalize(*right).into_inner().into(),
+            }),
         }
     }
 
-    /// Eval to weak head normal form
+    /// Evals to weak head normal form
     pub fn run(&mut self, code: &str) -> Result<Term, InterpreterError> {
         self.rename_counter = 0;
         let mut parser = Parser::new(code);
@@ -129,6 +148,48 @@ impl Interpreter {
                 self.free_vars_impl(left, vars);
                 self.free_vars_impl(right, vars);
             }
+        }
+    }
+
+    pub fn equivalent(x: &NormalizedTerm, y: &NormalizedTerm) -> bool {
+        Self::equivalent_impl(x, y, &mut Vec::new())
+    }
+
+    fn equivalent_impl(x: &Term, y: &Term, params: &mut Vec<(usize, usize)>) -> bool {
+        match (x, y) {
+            (Term::Var(v1), Term::Var(v2)) => params
+                .iter()
+                .rev()
+                .filter(|&&(p1, p2)| p1 == *v1 || p2 == *v2)
+                .map(|&(p1, p2)| p1 == *v1 && p2 == *v2)
+                .next()
+                .unwrap_or(*v1 == *v2),
+            (
+                Term::Lambda {
+                    param: p1,
+                    body: b1,
+                },
+                Term::Lambda {
+                    param: p2,
+                    body: b2,
+                },
+            ) => {
+                params.push((*p1, *p2));
+                let res = Self::equivalent_impl(b1, b2, params);
+                params.pop();
+                res
+            }
+            (
+                Term::App {
+                    left: l1,
+                    right: r1,
+                },
+                Term::App {
+                    left: l2,
+                    right: r2,
+                },
+            ) => Self::equivalent_impl(l1, l2, params) && Self::equivalent_impl(r1, r2, params),
+            _ => false,
         }
     }
 
